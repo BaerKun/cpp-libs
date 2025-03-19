@@ -2,21 +2,21 @@
 #include <iostream>
 
 int main() {
-    ThreadPool pool(4, 10);
-    unsigned result[100] = {0};
-    for (int i = 0; i < 100; ++i){
+    ThreadPool pool(4, 20);
+    unsigned result[200] = {0};
+    for (int i = 0; i < 200; ++i){
         pool.pushTask([i, output = result + i](){
             unsigned sum = 0;
-            for(unsigned j = i * 100; j < i * 500; ++j){
+            for(unsigned j = i; j < i * 400; ++j){
                 sum += j;
             }
             *output = sum;
         });
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::this_thread::sleep_for(std::chrono::microseconds(1));
     }
-    pool.join();
+    pool.waitTaskOver();
 
-    for (int i = 0; i < 100; ++i){
+    for (int i = 0; i < 200; ++i){
         std::cout << i << ": " << result[i] << std::endl;
     }
     return 0;
