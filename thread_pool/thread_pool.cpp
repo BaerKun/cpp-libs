@@ -1,6 +1,5 @@
 #include "thread_pool.hpp"
 
-
 /*
  *  互斥锁mutex
     所有线程中只有一个能持有，持有时间从lock->unlock
@@ -13,53 +12,73 @@
     获取锁后会检查回调条件，只有条件返回true(期间线程持有锁)，线程继续持有锁，并向下执行
     否则释放锁，继续等待下一次notify，本次notify结束
 
- *  atomic用于原子操作，相当于封装了lock和unlock
+ *  atomic用于原子操作，功能上相当于封装了lock和unlock，但底层逻辑更快
  */
 
-ThreadPool::ThreadPool(int threadsNumber, int taskQueueSize) :
-    threads(threadsNumber), busyThread(0), queueSize(taskQueueSize), shouldQuit(false) {
-    for(auto &t : threads){
+ThreadPool::ThreadPool(const int threadsNumber, const int taskQueueSize)
+    : threads_(threadsNumber), unfinishedTask_(0),
+      queueSize_(taskQueueSize), shouldQuit_(false) {
+    for (auto &t: threads_) {
         t = std::thread([this]() {
             while (true) {
-                std::unique_lock lock(queueMutex);
-                if (queue.empty()){
-                    queueCond.wait(lock, [this](){return !queue.empty() || shouldQuit;});
+                std::unique_lock lock(mutex_);
+                if (taskQueue_.empty()) {
+                    aTaskJoin_.wait(lock, [this]() { return !taskQueue_.empty() || shouldQuit_; });
                 }
-
-                if(shouldQuit)
+                if (shouldQuit_)
                     return;
-                
-                const Task task = queue.front();
-                queue.pop();
+
+                const Task task = taskQueue_.front();
+                taskQueue_.pop();
                 lock.unlock();
 
-                busyThread++;
                 task();
-                busyThread--;
-                taskCond.notify_all();
+
+                lock.lock();
+                --unfinishedTask_;
+                lock.unlock();
+
+                aTaskOver_.notify_all();
             }
         });
     }
 }
 
-void ThreadPool::pushTask(const Task &task){
-    queueMutex.lock();
-    if(queueSize && queue.size() == queueSize){
-        queue.pop();
+void ThreadPool::pushTask(const Task &task) {
+    mutex_.lock();
+    if (queueSize_ && taskQueue_.size() == queueSize_) {
+        taskQueue_.pop();
+    } else {
+        ++unfinishedTask_;
     }
-    queue.push(task);
-    queueMutex.unlock();
-    queueCond.notify_one();
+    taskQueue_.push(task);
+    mutex_.unlock();
+    aTaskJoin_.notify_one();
 }
 
-void ThreadPool::waitTaskOver() {
-    std::unique_lock lock(taskMutex);
-    taskCond.wait(lock, [this](){return queue.empty() && busyThread == 0;});
+bool ThreadPool::waitTaskOver(const int ms) {
+    std::unique_lock lock(mutex_);
+    const auto isOver = [this]() { return unfinishedTask_ == 0; };
+
+    if (isOver())
+        return true;
+
+    if (ms == 0)
+        return false;
+
+    if (ms > 0) {
+        // 作用和wait类似，但多了一个时间限制；
+        // 返回 线程被唤醒&&条件为true&&未超时；
+        return aTaskOver_.wait_for(lock, std::chrono::milliseconds(ms), isOver);
+    }
+
+    aTaskOver_.wait(lock, isOver);
+    return true;
 }
 
 ThreadPool::~ThreadPool() {
-    shouldQuit = true;
-    queueCond.notify_all();
-    for(auto& t : threads)
+    shouldQuit_ = true;
+    aTaskJoin_.notify_all();
+    for (auto &t: threads_)
         t.join();
 }
